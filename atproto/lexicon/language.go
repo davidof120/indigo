@@ -36,6 +36,10 @@ func (s *SchemaDef) CheckSchema() error {
 		return v.CheckSchema()
 	case SchemaSubscription:
 		return v.CheckSchema()
+	case SchemaPermissionSet:
+		return v.CheckSchema()
+	case SchemaPermission:
+		return v.CheckSchema()
 	case SchemaNull:
 		return v.CheckSchema()
 	case SchemaBoolean:
@@ -79,18 +83,22 @@ func (s *SchemaDef) SetBase(base string) {
 		}
 		s.Inner = v
 	case SchemaQuery:
-		for i, val := range v.Parameters.Properties {
-			val.SetBase(base)
-			v.Parameters.Properties[i] = val
+		if v.Parameters != nil {
+			for i, val := range v.Parameters.Properties {
+				val.SetBase(base)
+				v.Parameters.Properties[i] = val
+			}
 		}
 		if v.Output != nil && v.Output.Schema != nil {
 			v.Output.Schema.SetBase(base)
 		}
 		s.Inner = v
 	case SchemaProcedure:
-		for i, val := range v.Parameters.Properties {
-			val.SetBase(base)
-			v.Parameters.Properties[i] = val
+		if v.Parameters != nil {
+			for i, val := range v.Parameters.Properties {
+				val.SetBase(base)
+				v.Parameters.Properties[i] = val
+			}
 		}
 		if v.Input != nil && v.Input.Schema != nil {
 			v.Input.Schema.SetBase(base)
@@ -100,9 +108,11 @@ func (s *SchemaDef) SetBase(base string) {
 		}
 		s.Inner = v
 	case SchemaSubscription:
-		for i, val := range v.Parameters.Properties {
-			val.SetBase(base)
-			v.Parameters.Properties[i] = val
+		if v.Parameters != nil {
+			for i, val := range v.Parameters.Properties {
+				val.SetBase(base)
+				v.Parameters.Properties[i] = val
+			}
 		}
 		if v.Message != nil {
 			v.Message.Schema.SetBase(base)
@@ -178,6 +188,20 @@ func (s *SchemaDef) UnmarshalJSON(b []byte) error {
 		return nil
 	case "subscription":
 		v := new(SchemaSubscription)
+		if err = json.Unmarshal(b, v); err != nil {
+			return err
+		}
+		s.Inner = *v
+		return nil
+	case "permission-set":
+		v := new(SchemaPermissionSet)
+		if err = json.Unmarshal(b, v); err != nil {
+			return err
+		}
+		s.Inner = *v
+		return nil
+	case "permission":
+		v := new(SchemaPermission)
 		if err = json.Unmarshal(b, v); err != nil {
 			return err
 		}
@@ -308,8 +332,8 @@ func (s *SchemaRecord) CheckSchema() error {
 type SchemaQuery struct {
 	Type        string        `json:"type"` // "query"
 	Description *string       `json:"description,omitempty"`
-	Parameters  SchemaParams  `json:"parameters"`
-	Output      *SchemaBody   `json:"output"`
+	Parameters  *SchemaParams `json:"parameters"`       // optional
+	Output      *SchemaBody   `json:"output"`           // optional
 	Errors      []SchemaError `json:"errors,omitempty"` // optional
 }
 
@@ -319,18 +343,23 @@ func (s *SchemaQuery) CheckSchema() error {
 			return err
 		}
 	}
+	if s.Parameters != nil {
+		if err := s.Parameters.CheckSchema(); err != nil {
+			return err
+		}
+	}
 	for _, e := range s.Errors {
 		if err := e.CheckSchema(); err != nil {
 			return err
 		}
 	}
-	return s.Parameters.CheckSchema()
+	return nil
 }
 
 type SchemaProcedure struct {
 	Type        string        `json:"type"` // "procedure"
 	Description *string       `json:"description,omitempty"`
-	Parameters  SchemaParams  `json:"parameters"`
+	Parameters  *SchemaParams `json:"parameters"`       // optional
 	Output      *SchemaBody   `json:"output"`           // optional
 	Errors      []SchemaError `json:"errors,omitempty"` // optional
 	Input       *SchemaBody   `json:"input"`            // optional
@@ -347,18 +376,23 @@ func (s *SchemaProcedure) CheckSchema() error {
 			return err
 		}
 	}
+	if s.Parameters != nil {
+		if err := s.Parameters.CheckSchema(); err != nil {
+			return err
+		}
+	}
 	for _, e := range s.Errors {
 		if err := e.CheckSchema(); err != nil {
 			return err
 		}
 	}
-	return s.Parameters.CheckSchema()
+	return nil
 }
 
 type SchemaSubscription struct {
 	Type        string         `json:"type"` // "subscription"
 	Description *string        `json:"description,omitempty"`
-	Parameters  SchemaParams   `json:"parameters"`
+	Parameters  *SchemaParams  `json:"parameters"`        // optional
 	Message     *SchemaMessage `json:"message,omitempty"` // TODO(specs): is this really optional?
 }
 
@@ -368,7 +402,111 @@ func (s *SchemaSubscription) CheckSchema() error {
 			return err
 		}
 	}
-	return s.Parameters.CheckSchema()
+	if s.Parameters != nil {
+		if err := s.Parameters.CheckSchema(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type SchemaPermissionSet struct {
+	Type        string             `json:"type"` // "permission-set"
+	Description *string            `json:"description,omitempty"`
+	Permissions []SchemaPermission `json:"permissions"`
+}
+
+func (s *SchemaPermissionSet) CheckSchema() error {
+	for _, p := range s.Permissions {
+		if err := p.CheckSchema(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type SchemaPermission struct {
+	Type        string  `json:"type"` // "permission"
+	Description *string `json:"description,omitempty"`
+
+	Resource   string   `json:"resource"`
+	Accept     []string `json:"accept,omitempty"`
+	Collection []string `json:"collection,omitempty"`
+	Action     []string `json:"action,omitempty"`
+	LXM        []string `json:"lxm,omitempty"`
+	Audience   string   `json:"aud,omitempty"`
+	InheritAud bool     `json:"inheritAud,omitempty"`
+}
+
+func (s *SchemaPermission) CheckSchema() error {
+	if s.Type != "permission" {
+		return fmt.Errorf("expected 'permission'")
+	}
+	switch s.Resource {
+	case "blob":
+		if len(s.Accept) == 0 {
+			return fmt.Errorf("blob permission requires 'accept'")
+		}
+		for _, acc := range s.Accept {
+			// TODO: more complete MIME pattern parsing
+			parts := strings.SplitN(acc, "/", 3)
+			if len(parts) != 2 || parts[0] == "*" || parts[0] == "" || parts[1] == "" {
+				return fmt.Errorf("invalid blob 'accept' pattern: %s", acc)
+			}
+		}
+	case "repo":
+		if len(s.Collection) == 0 {
+			return fmt.Errorf("repo permission requires 'collection'")
+		}
+		for _, coll := range s.Collection {
+			if coll == "*" {
+				continue
+			}
+			_, err := syntax.ParseNSID(coll)
+			if err != nil {
+				return fmt.Errorf("repo permission: %w", err)
+			}
+		}
+		for _, act := range s.Action {
+			if act != "create" && act != "update" && act != "delete" {
+				return fmt.Errorf("unsupported repo action: %s", act)
+			}
+		}
+	case "rpc":
+		if len(s.LXM) == 0 {
+			return fmt.Errorf("rpc permission requires 'lxm'")
+		}
+		for _, lxm := range s.LXM {
+			if lxm == "*" {
+				if s.Audience == "*" {
+					// TODO: is this necessary here?
+					return fmt.Errorf("can't have both 'lxm' and 'aud' be '*'")
+				}
+				continue
+			}
+			_, err := syntax.ParseNSID(lxm)
+			if err != nil {
+				return fmt.Errorf("rpc permission: %w", err)
+			}
+		}
+		if (s.InheritAud == true && s.Audience != "") || (s.InheritAud == false && s.Audience == "") {
+			return fmt.Errorf("rpc permission must have eith 'aud' or 'inheritAud' defined")
+		}
+		if s.Audience != "" {
+			// TODO: helper for service refs
+			parts := strings.SplitN(s.Audience, "#", 3)
+			if len(parts) != 2 || parts[1] == "" {
+				return fmt.Errorf("rpc 'aud' must be a service ref")
+			}
+			_, err := syntax.ParseDID(parts[0])
+			if err != nil {
+				return fmt.Errorf("rpc 'aud' must be a service ref: %w", err)
+			}
+		}
+	default:
+		return fmt.Errorf("unsupported permission resource: %s", s.Resource)
+	}
+	return nil
 }
 
 type SchemaBody struct {
@@ -803,6 +941,9 @@ type SchemaParams struct {
 }
 
 func (s *SchemaParams) CheckSchema() error {
+	if s.Type != "params" {
+		return fmt.Errorf("expected 'params'")
+	}
 	// TODO: check for set uniqueness of required
 	for _, k := range s.Required {
 		if _, ok := s.Properties[k]; !ok {
